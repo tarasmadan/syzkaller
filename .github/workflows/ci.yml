@@ -20,14 +20,6 @@ jobs:
           path: gopath/src/github.com/google/syzkaller
           # This is needed for tools/check-commits.sh
           fetch-depth: 100
-      # Caches everything in .cache dir, in partiuclar we want to cache go-build and golangci-lint stuff.
-      # For reference see:
-      # https://help.github.com/en/actions/configuring-and-managing-workflows/caching-dependencies-to-speed-up-workflows#using-the-cache-action
-      - name: cache
-        uses: actions/cache@88522ab9f39a2ea568f7027eddc7d8d8bc9d59c8 # v3.3.1
-        with:
-          path: .cache
-          key: cache
       # Run make presubmit_aux.
       - name: run
         env:
@@ -42,11 +34,16 @@ jobs:
       uses: actions/checkout@c85c95e3d7251135ab7dc9ce3241c5835cc595a9 # v3.5.3
       with:
         path: gopath/src/github.com/google/syzkaller
-    - name: cache
+
+    - id: go-cache-paths
+      run: |
+        echo "::set-output name=go-build::$(go env GOCACHE)"
+    - name: Go Build Cache
       uses: actions/cache@88522ab9f39a2ea568f7027eddc7d8d8bc9d59c8 # v3.3.1
       with:
-        path: .cache
-        key: cache
+        path: ${{ steps.go-cache-paths.outputs.go-build }}
+        key: ${{ runner.os }}-go-build-${{ hashFiles('**/go.sum') }}
+
     - name: pull syz-env
       run: docker pull gcr.io/syzkaller/env:latest
     - name: run
@@ -65,11 +62,6 @@ jobs:
       uses: actions/checkout@c85c95e3d7251135ab7dc9ce3241c5835cc595a9 # v3.5.3
       with:
         path: gopath/src/github.com/google/syzkaller
-    - name: cache
-      uses: actions/cache@88522ab9f39a2ea568f7027eddc7d8d8bc9d59c8 # v3.3.1
-      with:
-        path: .cache
-        key: cache
     - name: pull syz-env
       run: docker pull gcr.io/syzkaller/env:latest
     - name: run
@@ -89,11 +81,6 @@ jobs:
         uses: actions/checkout@c85c95e3d7251135ab7dc9ce3241c5835cc595a9 # v3.5.3
         with:
           path: gopath/src/github.com/google/syzkaller
-      - name: cache
-        uses: actions/cache@88522ab9f39a2ea568f7027eddc7d8d8bc9d59c8 # v3.3.1
-        with:
-          path: .cache
-          key: cache
       - name: run
         run: gopath/src/github.com/google/syzkaller/.github/workflows/run.sh syz-env make ${{ matrix.target }}
   race:
@@ -103,11 +90,16 @@ jobs:
       uses: actions/checkout@c85c95e3d7251135ab7dc9ce3241c5835cc595a9 # v3.5.3
       with:
         path: gopath/src/github.com/google/syzkaller
-    - name: cache
+
+    - id: go-cache-paths
+      run: |
+        echo "::set-output name=go-build::$(go env GOCACHE)"
+    - name: Go Build Cache
       uses: actions/cache@88522ab9f39a2ea568f7027eddc7d8d8bc9d59c8 # v3.3.1
       with:
-        path: .cache
-        key: cache
+        path: ${{ steps.go-cache-paths.outputs.go-build }}
+        key: ${{ runner.os }}-go-build-${{ hashFiles('**/go.sum') }}
+
     - name: pull syz-env
       run: docker pull gcr.io/syzkaller/env:latest
     - name: run
@@ -119,10 +111,5 @@ jobs:
         uses: actions/checkout@c85c95e3d7251135ab7dc9ce3241c5835cc595a9 # v3.5.3
         with:
           path: gopath/src/github.com/google/syzkaller
-      - name: cache
-        uses: actions/cache@88522ab9f39a2ea568f7027eddc7d8d8bc9d59c8 # v3.3.1
-        with:
-          path: .cache
-          key: cache
       - name: run
         run: gopath/src/github.com/google/syzkaller/.github/workflows/run.sh syz-old-env make presubmit_old
