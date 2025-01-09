@@ -17,6 +17,7 @@ import (
 	"github.com/google/syzkaller/pkg/coveragedb/spannerclient"
 	_ "github.com/google/syzkaller/pkg/subsystem/lists"
 	"golang.org/x/exp/maps"
+	"golang.org/x/sync/errgroup"
 	"google.golang.org/api/iterator"
 )
 
@@ -115,6 +116,12 @@ type fileCoverageWithDetails struct {
 	Subsystems   []string
 }
 
+type fileCoverageWithLineInfo struct {
+	fileCoverageWithDetails
+	LinesInstrumented []int64
+	HitCounts         []int64
+}
+
 type pageColumnTarget struct {
 	TimePeriod coveragedb.TimePeriod
 	Commit     string
@@ -157,18 +164,17 @@ func filesCoverageToTemplateData(fCov []*fileCoverageWithDetails) *templateHeatm
 	return &res
 }
 
-func filesCoverageWithDetailsStmt(ns, subsystem, manager string, timePeriod coveragedb.TimePeriod) spanner.Statement {
+func filesCoverageWithDetailsStmt(ns, subsystem, manager string, timePeriod coveragedb.TimePeriod, withLines bool,
+) spanner.Statement {
 	if manager == "" {
 		manager = "*"
 	}
+	selectColumns := "commit, instrumented, covered, files.filepath, subsystems"
+	if withLines {
+		selectColumns += ", linesinstrumented, hitcounts"
+	}
 	stmt := spanner.Statement{
-		SQL: `
-select
-  commit,
-  instrumented,
-  covered,
-  files.filepath,
-  subsystems
+		SQL: "select " + selectColumns + `
 from merge_history
   join files
     on merge_history.session = files.session
@@ -187,37 +193,143 @@ where
 		stmt.SQL += " and $5=ANY(subsystems)"
 		stmt.Params["p5"] = subsystem
 	}
+	stmt.SQL += "\norder by files.filepath"
 	return stmt
 }
 
-func filesCoverageWithDetails(ctx context.Context, projectID string, scope *SelectScope,
-) ([]*fileCoverageWithDetails, error) {
-	client, err := spannerclient.NewClient(ctx, projectID)
-	if err != nil {
-		return nil, fmt.Errorf("spanner.NewClient() failed: %s", err.Error())
-	}
-	defer client.Close()
-
+func readCoverage(iterManager spannerclient.RowIterator) ([]*fileCoverageWithDetails, error) {
 	res := []*fileCoverageWithDetails{}
-	for _, timePeriod := range scope.Periods {
-		stmt := filesCoverageWithDetailsStmt(scope.Ns, scope.Subsystem, scope.Manager, timePeriod)
-		iter := client.Single().Query(ctx, stmt)
-		defer iter.Stop()
-		for {
-			row, err := iter.Next()
-			if err == iterator.Done {
-				break
+	ch := make(chan *fileCoverageWithDetails)
+	var err error
+	go func() {
+		defer close(ch)
+		err = readIterToChan(context.Background(), iterManager, ch)
+	}()
+	for fc := range ch {
+		res = append(res, fc)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("readIterToChan: %w", err)
+	}
+	return res, nil
+}
+
+// Unique coverage from specific manager is more expensive to get.
+// We get unique coverage comparing manager and total coverage on the AppEngine side.
+func readCoverageUniq(full, mgr spannerclient.RowIterator,
+) ([]*fileCoverageWithDetails, error) {
+	eg, ctx := errgroup.WithContext(context.Background())
+	fullCh := make(chan *fileCoverageWithLineInfo)
+	eg.Go(func() error {
+		defer close(fullCh)
+		return readIterToChan(ctx, full, fullCh)
+	})
+	partCh := make(chan *fileCoverageWithLineInfo)
+	eg.Go(func() error {
+		defer close(partCh)
+		return readIterToChan(ctx, mgr, partCh)
+	})
+	res := []*fileCoverageWithDetails{}
+	eg.Go(func() error {
+		partCov := <-partCh
+		for fullCov := range fullCh {
+			if partCov == nil || partCov.Filepath > fullCov.Filepath {
+				// No pair for the file in full aggregation is available.
+				cov := fullCov.fileCoverageWithDetails
+				cov.Covered = 0
+				res = append(res, &cov)
+				continue
 			}
-			if err != nil {
-				return nil, fmt.Errorf("failed to iter.Next() spanner DB: %w", err)
+			if partCov.Filepath == fullCov.Filepath {
+				if len(partCov.LinesInstrumented) > len(fullCov.LinesInstrumented) ||
+					len(partCov.HitCounts) > len(fullCov.HitCounts) ||
+					partCov.Commit != fullCov.Commit {
+					return fmt.Errorf("db record for file %s don't match", fullCov.Filepath)
+				}
+				res = append(res, uniqCoverage(fullCov, partCov))
+				partCov = <-partCh
+				continue
 			}
-			var r fileCoverageWithDetails
-			if err = row.ToStruct(&r); err != nil {
-				return nil, fmt.Errorf("failed to row.ToStruct() spanner DB: %w", err)
-			}
-			r.TimePeriod = timePeriod
-			res = append(res, &r)
+			// Partial coverage is a subset of full coverage.
+			// File can't exist only in partial set.
+			return fmt.Errorf("currupted db, file %s can't exist", partCov.Filepath)
 		}
+		return nil
+	})
+	if err := eg.Wait(); err != nil {
+		return nil, fmt.Errorf("eg.Wait: %w", err)
+	}
+	return res, nil
+}
+
+func uniqCoverage(full, partial *fileCoverageWithLineInfo) *fileCoverageWithDetails {
+	res := full.fileCoverageWithDetails // Use Instrumented count from full aggregation.
+	res.Covered = 0                     // We're recalculating only the covered lines.
+	fullCov := map[int64]int64{}
+	for i, ln := range full.LinesInstrumented {
+		fullCov[ln] = full.HitCounts[i]
+	}
+	for i, ln := range partial.LinesInstrumented {
+		if hitCount, exist := fullCov[ln]; exist && hitCount > 0 && hitCount == partial.HitCounts[i] {
+			res.Covered++
+		}
+	}
+	return &res
+}
+
+func readIterToChan[K fileCoverageWithLineInfo | fileCoverageWithDetails](
+	ctx context.Context, iter spannerclient.RowIterator, ch chan<- *K) error {
+	for {
+		row, err := iter.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("iter.Next: %w", err)
+		}
+		var r K
+		if err = row.ToStruct(&r); err != nil {
+			return fmt.Errorf("row.ToStruct: %w", err)
+		}
+		select {
+		case ch <- &r:
+		case <-ctx.Done():
+			return nil
+		}
+	}
+	return nil
+}
+
+func filesCoverageWithDetails(
+	ctx context.Context, client spannerclient.SpannerClient, scope *SelectScope, onlyUnique bool,
+) ([]*fileCoverageWithDetails, error) {
+	var res []*fileCoverageWithDetails
+	for _, timePeriod := range scope.Periods {
+		needLinesDetails := onlyUnique
+		iterManager := client.Single().Query(ctx,
+			filesCoverageWithDetailsStmt(scope.Ns, scope.Subsystem, scope.Manager, timePeriod, needLinesDetails))
+		defer iterManager.Stop()
+
+		var err error
+		var periodRes []*fileCoverageWithDetails
+		if onlyUnique {
+			iterAll := client.Single().Query(ctx,
+				filesCoverageWithDetailsStmt(scope.Ns, scope.Subsystem, "", timePeriod, needLinesDetails))
+			defer iterAll.Stop()
+			periodRes, err = readCoverageUniq(iterAll, iterManager)
+			if err != nil {
+				return nil, fmt.Errorf("uniqueFilesCoverageWithDetails: %w", err)
+			}
+		} else {
+			periodRes, err = readCoverage(iterManager)
+			if err != nil {
+				return nil, fmt.Errorf("readCoverage: %w", err)
+			}
+		}
+		for _, r := range periodRes {
+			r.TimePeriod = timePeriod
+		}
+		res = append(res, periodRes...)
 	}
 	return res, nil
 }
@@ -252,9 +364,10 @@ type SelectScope struct {
 	Periods   []coveragedb.TimePeriod
 }
 
-func DoHeatMapStyleBodyJS(ctx context.Context, projectID string, scope *SelectScope, sss, managers []string,
+func DoHeatMapStyleBodyJS(
+	ctx context.Context, client spannerclient.SpannerClient, scope *SelectScope, onlyUnique bool, sss, managers []string,
 ) (template.CSS, template.HTML, template.HTML, error) {
-	covAndDates, err := filesCoverageWithDetails(ctx, projectID, scope)
+	covAndDates, err := filesCoverageWithDetails(ctx, client, scope, onlyUnique)
 	if err != nil {
 		return "", "", "", fmt.Errorf("failed to filesCoverageWithDetails: %w", err)
 	}
@@ -264,9 +377,10 @@ func DoHeatMapStyleBodyJS(ctx context.Context, projectID string, scope *SelectSc
 	return stylesBodyJSTemplate(templData)
 }
 
-func DoSubsystemsHeatMapStyleBodyJS(ctx context.Context, projectID string, scope *SelectScope, sss, managers []string,
+func DoSubsystemsHeatMapStyleBodyJS(
+	ctx context.Context, client spannerclient.SpannerClient, scope *SelectScope, onlyUnique bool, sss, managers []string,
 ) (template.CSS, template.HTML, template.HTML, error) {
-	covWithDetails, err := filesCoverageWithDetails(ctx, projectID, scope)
+	covWithDetails, err := filesCoverageWithDetails(ctx, client, scope, onlyUnique)
 	if err != nil {
 		panic(err)
 	}

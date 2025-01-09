@@ -14,11 +14,14 @@ import (
 	"cloud.google.com/go/civil"
 	"github.com/google/syzkaller/pkg/cover"
 	"github.com/google/syzkaller/pkg/coveragedb"
+	"github.com/google/syzkaller/pkg/coveragedb/spannerclient"
 	"github.com/google/syzkaller/pkg/covermerger"
 	"github.com/google/syzkaller/pkg/validator"
 )
 
-type funcStyleBodyJS func(ctx context.Context, projectID string, scope *cover.SelectScope, sss, managers []string,
+type funcStyleBodyJS func(
+	ctx context.Context, client spannerclient.SpannerClient,
+	scope *cover.SelectScope, onlyUnique bool, sss, managers []string,
 ) (template.CSS, template.HTML, template.HTML, error)
 
 func handleCoverageHeatmap(c context.Context, w http.ResponseWriter, r *http.Request) error {
@@ -71,16 +74,24 @@ func handleHeatmap(c context.Context, w http.ResponseWriter, r *http.Request, f 
 	slices.Sort(managers)
 	slices.Sort(subsystems)
 
+	onlyUnique := r.FormValue("unique-only") == "1"
+
+	spannerClient, err := spannerclient.NewClient(c, "syzkaller")
+	if err != nil {
+		return fmt.Errorf("spanner.NewClient: %s", err.Error())
+	}
+	defer spannerClient.Close()
+
 	var style template.CSS
 	var body, js template.HTML
-	if style, body, js, err = f(c, "syzkaller",
+	if style, body, js, err = f(c, spannerClient,
 		&cover.SelectScope{
 			Ns:        hdr.Namespace,
 			Subsystem: ss,
 			Manager:   manager,
 			Periods:   periods,
 		},
-		subsystems, managers); err != nil {
+		onlyUnique, subsystems, managers); err != nil {
 		return fmt.Errorf("failed to generate heatmap: %w", err)
 	}
 	return serveTemplate(w, "custom_content.html", struct {

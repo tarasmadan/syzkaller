@@ -20,7 +20,7 @@ function initUpdateForm(){
   }
   $('#target-subsystem').val(curUrlParams.get('subsystem'));
   $('#target-manager').val(curUrlParams.get('manager'));
-  $("#only-unique").prop("checked", curUrlParams.get('subsystem') == "1");
+  $("#unique-only").prop("checked", curUrlParams.get('unique-only') == "1");
 }
 
 // This handler is called when user clicks on the coverage percentage.
