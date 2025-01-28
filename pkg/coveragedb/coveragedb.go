@@ -71,6 +71,17 @@ type MergedCoverageRecord struct {
 	FileData *Coverage
 }
 
+type FuncLines struct {
+	FilePath string
+	FuncName string
+	Lines    []int64
+}
+
+type JSONLWrapper struct {
+	MCR *MergedCoverageRecord
+	FL  *FuncLines
+}
+
 func SaveMergeResult(ctx context.Context, client spannerclient.SpannerClient, descr *HistoryRecord, dec *json.Decoder,
 	sss []*subsystem.Subsystem) (int, error) {
 	if client == nil {
