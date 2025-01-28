@@ -32,6 +32,13 @@ type FilesRecord struct {
 	Manager           string // "*" means "collected from all managers"
 }
 
+type FunctionsRecord struct {
+	Session  string
+	FilePath string
+	FuncName string
+	Lines    []int64
+}
+
 type FileSubsystems struct {
 	Namespace  string
 	FilePath   string
@@ -92,23 +99,28 @@ func SaveMergeResult(ctx context.Context, client spannerclient.SpannerClient, de
 	ssCache := make(map[string][]string)
 
 	session := uuid.New().String()
-	mutations := []*spanner.Mutation{}
+	var mutations []*spanner.Mutation
 
 	for {
-		var mcr MergedCoverageRecord
-		err := dec.Decode(&mcr)
+		var wr JSONLWrapper
+		err := dec.Decode(&wr)
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
 			return rowsCreated, fmt.Errorf("dec.Decode(MergedCoverageRecord): %w", err)
 		}
-		if mcr.FileData == nil {
-			return rowsCreated, errors.New("field MergedCoverageRecord.FileData can't be nil")
+		if wr.MCR == nil && wr.FL == nil {
+			return rowsCreated, errors.New("JSONLWrapper can't be empty")
 		}
-		mutations = append(mutations, fileRecordMutation(session, &mcr))
-		subsystems := fileSubsystems(mcr.FilePath, ssMatcher, ssCache)
-		mutations = append(mutations, fileSubsystemsMutation(descr.Namespace, mcr.FilePath, subsystems))
+		if mcr := wr.MCR; mcr != nil {
+			mutations = append(mutations, fileRecordMutation(session, mcr))
+			subsystems := fileSubsystems(mcr.FilePath, ssMatcher, ssCache)
+			mutations = append(mutations, fileSubsystemsMutation(descr.Namespace, mcr.FilePath, subsystems))
+		}
+		if fl := wr.FL; fl != nil {
+			mutations = append(mutations, fileFunctionsMutation(session, fl))
+		}
 		// There is a limit on the number of mutations per transaction (80k) imposed by the DB.
 		// This includes both explicit mutations of the fields (6 fields * 1k records = 6k mutations)
 		//   and implicit index mutations.
@@ -199,6 +211,19 @@ func historyMutation(session string, template *HistoryRecord) *spanner.Mutation 
 		panic(fmt.Sprintf("failed to spanner.InsertStruct(): %s", err.Error()))
 	}
 	return historyInsert
+}
+
+func fileFunctionsMutation(session string, fl *FuncLines) *spanner.Mutation {
+	insert, err := spanner.InsertOrUpdateStruct("functions", &FunctionsRecord{
+		Session:  session,
+		FilePath: fl.FilePath,
+		FuncName: fl.FuncName,
+		Lines:    fl.Lines,
+	})
+	if err != nil {
+		panic(fmt.Sprintf("failed to fileFunctionsMutation: %v", err))
+	}
+	return insert
 }
 
 func fileRecordMutation(session string, mcr *MergedCoverageRecord) *spanner.Mutation {
