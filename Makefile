@@ -294,6 +294,10 @@ lint:
 	CGO_ENABLED=1 $(HOSTGO) install github.com/golangci/golangci-lint/cmd/golangci-lint
 	CGO_ENABLED=1 $(HOSTGO) build -buildmode=plugin -o bin/syz-linter.so ./tools/syz-linter
 	bin/golangci-lint run $(LINT-FLAGS) ./...
+	$(HOSTGO) install github.com/google/keep-sorted
+	find . -name "*.go" -exec bin/keep-sorted {} \;
+	# Check for the keep-sorter violations. Check-diff output looks better than the keep-sorted output.
+	$(MAKE) check_diff
 
 presubmit:
 	$(MAKE) presubmit_aux
@@ -310,12 +314,12 @@ presubmit:
 
 presubmit_aux:
 	$(MAKE) generate
-	$(MAKE) -j100 check_commits check_diff check_copyright check_language check_whitespace check_links check_html check_shebang tidy
+	$(MAKE) -j100 check_diff check_commits check_copyright check_language check_whitespace check_links check_html check_shebang tidy
 	$(GO) mod tidy
 
 presubmit_build: descriptions
-	# Run go build before lint for better error messages if build is broken.
-	# This does not check build of test files, but running go test takes too long (even for building).
+  # Run go build before lint for better error messages if build is broken.
+  # This does not check build of test files, but running go test takes too long (even for building).
 	$(GO) build ./...
 	$(MAKE) lint
 	SYZ_SKIP_DEV_APPSERVER_TESTS=1 $(MAKE) test

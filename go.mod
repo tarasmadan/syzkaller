@@ -20,6 +20,7 @@ require (
 	github.com/google/flatbuffers v25.1.24+incompatible
 	github.com/google/generative-ai-go v0.19.0
 	github.com/google/go-cmp v0.6.0
+	github.com/google/keep-sorted v0.6.0
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/handlers v1.5.2
 	github.com/ianlancetaylor/demangle v0.0.0-20240312041847-bd984b5ce465
@@ -45,6 +46,8 @@ require (
 	k8s.io/client-go v0.32.1
 	sigs.k8s.io/yaml v1.4.0
 )
+
+require github.com/Workiva/go-datastructures v1.0.53 // indirect
 
 require (
 	4d63.com/gocheckcompilerdirectives v1.2.1 // indirect
