@@ -278,7 +278,7 @@ var tests = []*Test{
 		Body: func(outc chan []byte, errc chan error) {
 			for i := 0; i < 5; i++ {
 				time.Sleep(time.Second)
-				outc <- append(executingProgram, '\n')
+				outc <- []byte(executedProgramsStart + "\n")
 			}
 			errc <- nil
 		},
@@ -307,7 +307,7 @@ var tests = []*Test{
 		Name: "split-line",
 		Exit: ExitNormal,
 		Body: func(outc chan []byte, errc chan error) {
-			// "ODEBUG:" lines should be ignored, however the matchPos logic
+			// "ODEBUG:" lines should be ignored, however the curPos logic
 			// used to trim the lines so that we could see just "BUG:" later
 			// and detect it as crash.
 			buf := new(bytes.Buffer)
