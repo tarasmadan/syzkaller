@@ -253,51 +253,43 @@ const (
 	ExitError
 )
 
-type InjectExecuting <-chan bool
-type OutputSize int
+type RunOptions struct {
+	// says which exit modes should be considered as errors/OK
+	ExitCondition ExitCondition
+	// BeforeContext is how many bytes BEFORE the crash description to keep in the report.
+	BeforeContext int
+	// afterContext is how many bytes AFTER the crash description to keep in the report.
+	afterContext int
+	// An early notification that the command has finished / VM crashed.
+	EarlyFinishCb   func()
+	InjectExecuting <-chan bool
+}
 
-// An early notification that the command has finished / VM crashed.
-type EarlyFinishCb func()
+var DefaultRunOptions = RunOptions{
+	ExitCondition: ExitNormal,
+	BeforeContext: 128 << 10,
+	afterContext:  128 << 10,
+}
 
 // Run runs cmd inside of the VM (think of ssh cmd) and monitors command execution
 // and the kernel console output. It detects kernel oopses in output, lost connections, hangs, etc.
 // Returns command+kernel output and a non-symbolized crash report (nil if no error happens).
-// Accepted options:
-//   - ExitCondition: says which exit modes should be considered as errors/OK
-//   - OutputSize: how much output to keep/return
-func (inst *Instance) Run(ctx context.Context, reporter *report.Reporter, command string, opts ...any) (
+func (inst *Instance) Run(ctx context.Context, reporter *report.Reporter, command string, options ...RunOptions) (
 	[]byte, *report.Report, error) {
-	exit := ExitNormal
-	var injected <-chan bool
-	var earlyFinishCb func()
-	beforeContext := beforeContextDefault
-	for _, o := range opts {
-		switch opt := o.(type) {
-		case ExitCondition:
-			exit = opt
-		case OutputSize:
-			beforeContext = int(opt)
-		case InjectExecuting:
-			injected = opt
-		case EarlyFinishCb:
-			earlyFinishCb = opt
-		default:
-			panic(fmt.Sprintf("unknown option %#v", opt))
-		}
+	opts := DefaultRunOptions
+	if len(options) > 0 {
+		opts = options[0]
 	}
 	outc, errc, err := inst.impl.Run(ctx, command)
 	if err != nil {
 		return nil, nil, err
 	}
 	mon := &monitor{
+		RunOptions:      opts,
 		inst:            inst,
 		outc:            outc,
-		injected:        injected,
 		errc:            errc,
-		earlyFinishCb:   earlyFinishCb,
 		reporter:        reporter,
-		beforeContext:   beforeContext,
-		exit:            exit,
 		lastExecuteTime: time.Now(),
 	}
 	rep := mon.monitorExecution()
@@ -338,19 +330,15 @@ func NewDispatcher(pool *Pool, def dispatcher.Runner[*Instance]) *Dispatcher {
 }
 
 type monitor struct {
-	inst          *Instance
-	outc          <-chan []byte
-	injected      <-chan bool
-	earlyFinishCb func()
-	errc          <-chan error
-	reporter      *report.Reporter
-	exit          ExitCondition
+	RunOptions
+	inst     *Instance
+	outc     <-chan []byte
+	errc     <-chan error
+	reporter *report.Reporter
 	// output is at most mon.beforeContext + len(report) + afterContext bytes.
 	output []byte
 	// curPos in the output to scan for the matches.
-	curPos int
-	// beforeContext is how many bytes to keep in the output before the problem context.
-	beforeContext   int
+	curPos          int
 	lastExecuteTime time.Time
 	// extractCalled is used to prevent multiple extractError calls.
 	extractCalled bool
@@ -360,8 +348,8 @@ func (mon *monitor) monitorExecution() *report.Report {
 	ticker := time.NewTicker(tickerPeriod * mon.inst.pool.timeouts.Scale)
 	defer ticker.Stop()
 	defer func() {
-		if mon.earlyFinishCb != nil {
-			mon.earlyFinishCb()
+		if mon.EarlyFinishCb != nil {
+			mon.EarlyFinishCb()
 		}
 	}()
 	for {
@@ -372,12 +360,12 @@ func (mon *monitor) monitorExecution() *report.Report {
 				// The program has exited without errors,
 				// but wait for kernel output in case there is some delayed oops.
 				crash := ""
-				if mon.exit&ExitNormal == 0 {
+				if mon.ExitCondition&ExitNormal == 0 {
 					crash = lostConnectionCrash
 				}
 				return mon.extractError(crash)
 			case ErrTimeout:
-				if mon.exit&ExitTimeout == 0 {
+				if mon.ExitCondition&ExitTimeout == 0 {
 					return mon.extractError(timeoutCrash)
 				}
 				return nil
@@ -385,7 +373,7 @@ func (mon *monitor) monitorExecution() *report.Report {
 				// Note: connection lost can race with a kernel oops message.
 				// In such case we want to return the kernel oops.
 				crash := ""
-				if mon.exit&ExitError == 0 {
+				if mon.ExitCondition&ExitError == 0 {
 					crash = lostConnectionCrash
 				}
 				return mon.extractError(crash)
@@ -399,7 +387,7 @@ func (mon *monitor) monitorExecution() *report.Report {
 			if rep, done := mon.appendOutput(out); done {
 				return rep
 			}
-		case <-mon.injected:
+		case <-mon.InjectExecuting:
 			mon.lastExecuteTime = time.Now()
 		case <-ticker.C:
 			// Detect both "no output whatsoever" and "kernel episodically prints
@@ -422,9 +410,9 @@ func (mon *monitor) appendOutput(out []byte) (*report.Report, bool) {
 	if mon.reporter.ContainsCrash(mon.output[mon.curPos:]) {
 		return mon.extractError("unknown error"), true
 	}
-	if len(mon.output) > 2*mon.beforeContext {
-		copy(mon.output, mon.output[len(mon.output)-mon.beforeContext:])
-		mon.output = mon.output[:mon.beforeContext]
+	if len(mon.output) > 2*mon.BeforeContext {
+		copy(mon.output, mon.output[len(mon.output)-mon.BeforeContext:])
+		mon.output = mon.output[:mon.BeforeContext]
 	}
 	// Find the starting position for crash matching on the next iteration.
 	// We step back from the end of output by maxErrorLength to handle the case
@@ -448,9 +436,9 @@ func (mon *monitor) extractError(defaultError string) *report.Report {
 		panic("extractError called twice")
 	}
 	mon.extractCalled = true
-	if mon.earlyFinishCb != nil {
-		mon.earlyFinishCb()
-		mon.earlyFinishCb = nil
+	if mon.EarlyFinishCb != nil {
+		mon.EarlyFinishCb()
+		mon.EarlyFinishCb = nil
 	}
 	diagOutput, diagWait := []byte{}, false
 	if defaultError != "" {
@@ -501,8 +489,8 @@ func (mon *monitor) createReport(defaultError string) *report.Report {
 			Type:       typ,
 		}
 	}
-	start := max(rep.StartPos-mon.beforeContext, 0)
-	end := min(rep.EndPos+afterContext, len(rep.Output))
+	start := max(rep.StartPos-mon.BeforeContext, 0)
+	end := min(rep.EndPos+mon.afterContext, len(rep.Output))
 	rep.Output = rep.Output[start:end]
 	rep.StartPos -= start
 	rep.EndPos -= start
@@ -539,10 +527,5 @@ const (
 )
 
 var (
-	// beforeContextDefault is how many bytes BEFORE the crash description to keep in the report.
-	beforeContextDefault = 128 << 10
-	// afterContext is how many bytes AFTER the crash description to keep in the report.
-	afterContext = 128 << 10
-
 	tickerPeriod = 10 * time.Second
 )
