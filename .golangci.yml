@@ -97,7 +97,7 @@ linters:
       exclude: ["keep-sorted"]
     gocognit:
       # TODO: consider reducing this value.
-      min-complexity: 60
+      min-complexity: 55
     funlen:
       # TODO: consider reducing these value.
       lines: 140
@@ -127,6 +127,7 @@ linters:
         - unused
         - syz-linter
         - godot
+        - gocognit
       - path: sys/register.go
         linters:
           - whitespace # TODO: fix the code generation

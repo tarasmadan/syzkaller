@@ -289,59 +289,63 @@ func (comp *compiler) patchConsts(consts0 map[string]uint64) {
 			}
 			n.Values = values
 		case *ast.Resource, *ast.Struct, *ast.Call, *ast.TypeDef:
-			// Walk whole tree and replace consts in Type's and Int's.
-			missing := ""
-			comp.foreachType(decl, func(_ *ast.Type, desc *typeDesc,
-				args []*ast.Type, _ prog.IntTypeCommon) {
-				for i, arg := range args {
-					if desc.Args[i].Type.Kind&kindInt != 0 {
-						comp.patchTypeConst(arg, consts, &missing)
-					}
-				}
-			})
-			switch n := decl.(type) {
-			case *ast.Resource:
-				for _, v := range n.Values {
-					comp.patchIntConst(v, consts, &missing)
-				}
-			case *ast.Call:
-				for _, attr := range n.Attrs {
-					if callAttrs[attr.Ident].Type == intAttr {
-						comp.patchTypeConst(attr.Args[0], consts, &missing)
-					}
-				}
-			case *ast.Struct:
-				for _, attr := range n.Attrs {
-					attrDesc := structOrUnionAttrs(n)[attr.Ident]
-					if attrDesc.Type == intAttr {
-						comp.patchTypeConst(attr.Args[0], consts, &missing)
-					}
-				}
-				foreachFieldAttrConst(n, func(t *ast.Type) {
-					comp.patchTypeConst(t, consts, &missing)
-				})
-			}
-			if missing == "" {
-				continue
-			}
-			// Produce a warning about unsupported syscall/resource/struct.
-			// TODO(dvyukov): we should transitively remove everything that
-			// depends on unsupported things. Potentially we still can get,
-			// say, a bad int range error due to the wrong const value.
-			// However, if we have a union where one of the options is
-			// arch-specific and does not have a const value, it's probably
-			// better to remove just that option. But then if we get to 0
-			// options in the union, we still need to remove it entirely.
-			pos, typ, name := decl.Info()
-			if id := typ + " " + name; !comp.unsupported[id] {
-				comp.unsupported[id] = true
-				comp.warning(pos, "unsupported %v: %v due to missing const %v",
-					typ, name, missing)
-			}
-			if c, ok := decl.(*ast.Call); ok {
-				c.NR = ^uint64(0) // mark as unused to not generate it
+			comp.patchOtherConsts(decl, consts)
+		}
+	}
+}
+
+func (comp *compiler) patchOtherConsts(decl ast.Node, consts map[string]uint64) {
+	// Walk whole tree and replace consts in Type's and Int's.
+	missing := ""
+	comp.foreachType(decl, func(_ *ast.Type, desc *typeDesc,
+		args []*ast.Type, _ prog.IntTypeCommon) {
+		for i, arg := range args {
+			if desc.Args[i].Type.Kind&kindInt != 0 {
+				comp.patchTypeConst(arg, consts, &missing)
 			}
 		}
+	})
+	switch n := decl.(type) {
+	case *ast.Resource:
+		for _, v := range n.Values {
+			comp.patchIntConst(v, consts, &missing)
+		}
+	case *ast.Call:
+		for _, attr := range n.Attrs {
+			if callAttrs[attr.Ident].Type == intAttr {
+				comp.patchTypeConst(attr.Args[0], consts, &missing)
+			}
+		}
+	case *ast.Struct:
+		for _, attr := range n.Attrs {
+			attrDesc := structOrUnionAttrs(n)[attr.Ident]
+			if attrDesc.Type == intAttr {
+				comp.patchTypeConst(attr.Args[0], consts, &missing)
+			}
+		}
+		foreachFieldAttrConst(n, func(t *ast.Type) {
+			comp.patchTypeConst(t, consts, &missing)
+		})
+	}
+	if missing == "" {
+		return
+	}
+	// Produce a warning about unsupported syscall/resource/struct.
+	// TODO(dvyukov): we should transitively remove everything that
+	// depends on unsupported things. Potentially we still can get,
+	// say, a bad int range error due to the wrong const value.
+	// However, if we have a union where one of the options is
+	// arch-specific and does not have a const value, it's probably
+	// better to remove just that option. But then if we get to 0
+	// options in the union, we still need to remove it entirely.
+	pos, typ, name := decl.Info()
+	if id := typ + " " + name; !comp.unsupported[id] {
+		comp.unsupported[id] = true
+		comp.warning(pos, "unsupported %v: %v due to missing const %v",
+			typ, name, missing)
+	}
+	if c, ok := decl.(*ast.Call); ok {
+		c.NR = ^uint64(0) // mark as unused to not generate it
 	}
 }
 

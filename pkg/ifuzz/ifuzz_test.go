@@ -46,6 +46,7 @@ func TestDecode(t *testing.T) {
 	}
 }
 
+// nolint: gocognit
 func testDecode(t *testing.T, arch string) {
 	insnset := iset.Arches[arch]
 	xedEnabled := false

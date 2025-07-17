@@ -213,6 +213,7 @@ func progFileList(dir, filter string) ([]string, error) {
 	return res, nil
 }
 
+// nolint: gocognit
 func (ctx *Context) generateFile(sandboxes []string, cover []bool, filename string) error {
 	p, requires, results, err := parseProg(ctx.Target, ctx.Dir, filename, nil)
 	if err != nil {
