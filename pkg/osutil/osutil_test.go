@@ -84,15 +84,7 @@ func TestCopyFiles(t *testing.T) {
 					dir := t.TempDir()
 					src := filepath.Join(dir, "src")
 					dst := filepath.Join(dir, "dst")
-					for _, file := range test.files {
-						file = filepath.Join(src, filepath.FromSlash(file))
-						if err := MkdirAll(filepath.Dir(file)); err != nil {
-							t.Fatal(err)
-						}
-						if err := WriteFile(file, []byte{'a'}); err != nil {
-							t.Fatal(err)
-						}
-					}
+					createTestFiles(t, src, test.files)
 					if err := fn(src, dst, test.patterns); err != nil {
 						if test.err != "" {
 							if strings.Contains(err.Error(), test.err) {
@@ -118,6 +110,18 @@ func TestCopyFiles(t *testing.T) {
 				})
 			}
 		})
+	}
+}
+
+func createTestFiles(t *testing.T, src string, files []string) {
+	for _, file := range files {
+		file = filepath.Join(src, filepath.FromSlash(file))
+		if err := MkdirAll(filepath.Dir(file)); err != nil {
+			t.Fatal(err)
+		}
+		if err := WriteFile(file, []byte{'a'}); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 

@@ -97,7 +97,7 @@ linters:
       exclude: ["keep-sorted"]
     gocognit:
       # TODO: consider reducing this value.
-      min-complexity: 70
+      min-complexity: 60
     funlen:
       # TODO: consider reducing these value.
       lines: 140
