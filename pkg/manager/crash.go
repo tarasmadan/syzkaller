@@ -17,6 +17,7 @@ import (
 	"github.com/google/syzkaller/pkg/log"
 	"github.com/google/syzkaller/pkg/mgrconfig"
 	"github.com/google/syzkaller/pkg/osutil"
+	"github.com/google/syzkaller/pkg/report"
 	"github.com/google/syzkaller/prog"
 )
 
@@ -87,10 +88,20 @@ func (cs *CrashStore) SaveCrash(crash *Crash) (bool, error) {
 	}
 	writeOrRemove("log", crash.Output)
 	writeOrRemove("tag", []byte(cs.Tag))
-	writeOrRemove("report", crash.Report.Report)
+	writeOrRemove("report", mergeReportBytes(append([]*report.Report{crash.Report}, crash.TailReports...)))
 	writeOrRemove("machineInfo", crash.MachineInfo)
 
 	return first, nil
+}
+
+func mergeReportBytes(reps []*report.Report) []byte {
+	const reportSeparator = "\n<<<<<<<<<<<<<<< EOF report >>>>>>>>>>>>>>>\n\n"
+	var res []byte
+	for _, rep := range reps {
+		res = append(res, rep.Report...)
+		res = append(res, []byte(reportSeparator)...)
+	}
+	return res
 }
 
 func (cs *CrashStore) HasRepro(title string) bool {
