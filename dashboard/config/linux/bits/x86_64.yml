@@ -32,7 +32,8 @@ config:
 
  # Should be faster this way.
  - PARAVIRT_SPINLOCKS
- - PARAVIRT_DEBUG
+ # Disabled in "x86/paravirt: Remove PARAVIRT_DEBUG config option"
+ - PARAVIRT_DEBUG: [-v6.19]
 
  - PROCESSOR_SELECT
  - CPU_SUP_HYGON: n
@@ -61,3 +62,4 @@ config:
 
  # Allows to boot kernel via qemu directly from a vmlinux file.
  - PVH: [v5.0]
+
