@@ -22,10 +22,12 @@ import (
 	"github.com/google/syzkaller/sys/targets"
 )
 
+var ErrDidNotCrash = errors.New("reproducer did not crash")
+
 // Reproduce action tries to reproduce a crash with the given reproducer,
 // and outputs the resulting crash report.
 // If the reproducer does not trigger a crash, action fails.
-var Reproduce = aflow.NewFuncAction("crash-reproducer", reproduce)
+var Reproduce = aflow.NewFuncAction("crash-reproducer", ReproduceFunc)
 
 type ReproduceArgs struct {
 	Syzkaller    string
@@ -136,15 +138,16 @@ func parseTestError(err *instance.TestError) string {
 	return fmt.Sprintf("%v: %v\n%s", what, err.Title, extraInfo)
 }
 
-func reproduce(ctx *aflow.Context, args ReproduceArgs) (reproduceResult, error) {
+func ReproduceFunc(ctx *aflow.Context, args ReproduceArgs) (reproduceResult, error) {
 	imageData, err := os.ReadFile(args.Image)
 	if err != nil {
 		return reproduceResult{}, err
 	}
 	desc := fmt.Sprintf("kernel commit %v, kernel config hash %v, image hash %v,"+
-		" vm %v, vm config hash %v, C repro hash %v, version 3",
+		" vm %v, vm config hash %v, C repro hash %v, syz repro hash %v, opts hash %v, version 4",
 		args.KernelCommit, hash.String(args.KernelConfig), hash.String(imageData),
-		args.Type, hash.String(args.VM), hash.String(args.ReproC))
+		args.Type, hash.String(args.VM), hash.String(args.ReproC),
+		hash.String(args.ReproSyz), hash.String(args.ReproOpts))
 	type Cached struct {
 		BugTitle string
 		Report   string
@@ -170,7 +173,7 @@ func reproduce(ctx *aflow.Context, args ReproduceArgs) (reproduceResult, error) 
 	if cached.Error != "" {
 		return reproduceResult{}, errors.New(cached.Error)
 	} else if cached.Report == "" {
-		return reproduceResult{}, aflow.FlowError(errors.New("reproducer did not crash"))
+		return reproduceResult{}, aflow.FlowError(ErrDidNotCrash)
 	}
 	return reproduceResult{
 		ReproducedBugTitle:    cached.BugTitle,
