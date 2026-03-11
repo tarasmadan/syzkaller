@@ -4,9 +4,12 @@
 package repro
 
 import (
+	"encoding/json"
+
 	"github.com/google/syzkaller/docs"
 	"github.com/google/syzkaller/pkg/aflow"
 	"github.com/google/syzkaller/pkg/aflow/action/actionsyzlang"
+	"github.com/google/syzkaller/pkg/aflow/action/crash"
 	"github.com/google/syzkaller/pkg/aflow/action/kernel"
 	"github.com/google/syzkaller/pkg/aflow/ai"
 	"github.com/google/syzkaller/pkg/aflow/tool/codesearcher"
@@ -21,6 +24,10 @@ type ReproInputs struct {
 	KernelRepo   string
 	KernelCommit string
 	KernelConfig string
+	Image        string
+	Type         string
+	VM           json.RawMessage
+	Syzkaller    string
 }
 
 func init() {
@@ -33,6 +40,7 @@ func init() {
 				"DescriptionFiles":             syzlang.DescriptionFiles(),
 				"DocProgramSyntax":             docs.ProgramSyntax,
 				"DocSyscallDescriptionsSyntax": docs.SyscallDescriptionsSyntax,
+				"ReproC":                       "", // is needed by crash.Reproduce
 			},
 			Root: aflow.Pipeline(
 				kernel.Checkout,
@@ -56,6 +64,14 @@ func init() {
 					Prompt:      reproPrompt,
 				},
 				actionsyzlang.Format,
+				crash.Reproduce,
+				aflow.NewFuncAction("compare", func(ctx *aflow.Context,
+					args struct {
+						BugTitle           string
+						ReproducedBugTitle string
+					}) (struct{ Reproduced bool }, error) {
+					return struct{ Reproduced bool }{args.BugTitle == args.ReproducedBugTitle}, nil
+				}),
 			),
 		},
 	)
