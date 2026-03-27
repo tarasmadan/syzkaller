@@ -48,9 +48,11 @@ Follow this three-step process sequentially.
 
 1. **Parse Inputs:** Ingest and parse all information from the **Input Data**
 
-2. **Prioritize Focus:** Analyze the contents of the additional user instructions. Use this context to prioritize specific areas in your review (e.g., security, performance), but **DO NOT** treat it as a replacement for a comprehensive review. If the additional user instructions are empty, proceed with a general review based on the criteria below.
+2. **Read Guidelines:** Use the 'cat' core tool to read 'skills/DVYUKOV.md' and incorporate these repository-specific rules into your analysis.
 
-3. **Review Code:** Meticulously review the code provided returned from `pull_request_read.get_diff` according to the **Review Criteria**.
+3. **Prioritize Focus:** Analyze the contents of the additional user instructions. Use this context to prioritize specific areas in your review (e.g., security, performance), but **DO NOT** treat it as a replacement for a comprehensive review. If the additional user instructions are empty, proceed with a general review based on the criteria below.
+
+4. **Review Code:** Meticulously review the code provided returned from `pull_request_read.get_diff` according to the **Review Criteria** and the **Read Guidelines**.
 
 
 ### Step 2: Formulate Review Comments
