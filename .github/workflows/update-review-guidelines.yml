@@ -1,0 +1,120 @@
+# Copyright 2026 syzkaller project authors. All rights reserved.
+# Use of this source code is governed by Apache 2 LICENSE that can be found in the LICENSE file.
+
+name: '📅 Update Review Guidelines'
+
+on:
+  schedule:
+    - cron: '0 0 * * 0' # Run once a week on Sunday
+  workflow_dispatch: # Enable manual run
+
+concurrency:
+  group: '${{ github.workflow }}-${{ github.event_name }}'
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: 'bash'
+
+jobs:
+  update-guidelines:
+    timeout-minutes: 15
+    runs-on: 'ubuntu-latest'
+    permissions:
+      contents: 'write'
+      id-token: 'write'
+      issues: 'write'
+      pull-requests: 'write'
+
+    steps:
+      - name: 'Mint identity token'
+        id: 'mint_identity_token'
+        if: |-
+          ${{ vars.APP_ID }}
+        uses: 'actions/create-github-app-token@29824e69f54612133e76f7eaac726eef6c875baf' # ratchet:actions/create-github-app-token@v2
+        with:
+          app-id: '${{ vars.APP_ID }}'
+          private-key: '${{ secrets.APP_PRIVATE_KEY }}'
+          permission-contents: 'write'
+          permission-issues: 'write'
+          permission-pull-requests: 'write'
+
+      - name: 'Checkout Code'
+        uses: 'actions/checkout@v4' # ratchet:exclude
+
+      - name: 'Extract Review Comments from Verified Users'
+        env:
+          GH_TOKEN: '${{ steps.mint_identity_token.outputs.token || secrets.GITHUB_TOKEN || github.token }}'
+        run: |
+          # Calculate since date (1 week ago)
+          SINCE_DATE=$(date -d "-7 days" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)
+          if [ -z "$SINCE_DATE" ]; then
+              # Fallback for non-GNU date
+              SINCE_DATE="2026-03-20T00:00:00Z" # Approx
+          fi
+          
+          # We pass "dvyukov" as the list of users to filter.
+          bash tools/extract_review_comments.sh "$SINCE_DATE" "dvyukov_comments.txt" "dvyukov"
+
+      - name: 'Run Gemini Review Analysis'
+        id: 'run_gemini'
+        uses: 'google-github-actions/run-gemini-cli@v0' # ratchet:exclude
+        env:
+          GITHUB_TOKEN: '${{ steps.mint_identity_token.outputs.token || secrets.GITHUB_TOKEN || github.token }}'
+          REPOSITORY: '${{ github.repository }}'
+          GEMINI_API_KEY: '${{ secrets.GEMINI_API_KEY }}'
+          GOOGLE_API_KEY: '${{ secrets.GOOGLE_API_KEY }}'
+        with:
+          gcp_location: '${{ vars.GOOGLE_CLOUD_LOCATION }}'
+          gcp_project_id: '${{ vars.GOOGLE_CLOUD_PROJECT }}'
+          gcp_service_account: '${{ vars.SERVICE_ACCOUNT_EMAIL }}'
+          gcp_workload_identity_provider: '${{ vars.GCP_WIF_PROVIDER }}'
+          gemini_api_key: '${{ secrets.GEMINI_API_KEY }}'
+          gemini_cli_version: '${{ vars.GEMINI_CLI_VERSION }}'
+          gemini_debug: '${{ fromJSON(vars.GEMINI_DEBUG || vars.ACTIONS_STEP_DEBUG || false) }}'
+          gemini_model: '${{ vars.GEMINI_MODEL }}'
+          google_api_key: '${{ secrets.GOOGLE_API_KEY }}'
+          use_gemini_code_assist: '${{ vars.GOOGLE_GENAI_USE_GCA }}'
+          use_vertex_ai: '${{ vars.GOOGLE_GENAI_USE_VERTEXAI }}'
+          upload_artifacts: '${{ vars.UPLOAD_ARTIFACTS }}'
+          workflow_name: 'gemini-invoke'
+          settings: |-
+            {
+              "model": {
+                "maxSessionTurns": 15
+              },
+              "telemetry": {
+                "enabled": true,
+                "target": "local",
+                "outfile": ".gemini/telemetry.log"
+              },
+              "mcpServers": {
+                "github": {
+                  "command": "docker",
+                  "args": [
+                    "run",
+                    "-i",
+                    "--rm",
+                    "-e",
+                    "GITHUB_PERSONAL_ACCESS_TOKEN",
+                    "ghcr.io/github/github-mcp-server:v0.27.0"
+                  ],
+                  "includeTools": [
+                    "get_file_contents",
+                    "create_or_update_file",
+                    "push_files",
+                    "create_pull_request"
+                  ],
+                  "env": {
+                    "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}"
+                  }
+                }
+              },
+              "tools": {
+                "core": [
+                  "run_shell_command(cat)"
+                ]
+              }
+            }
+          prompt: |-
+            Read 'dvyukov_comments.txt' using the 'cat' core tool. Read 'skills/DVYUKOV.md' (if it exists) using the 'github' MCP server or the 'cat' core tool. Determine if there are new review style guidelines or recommendations in the comments that are not yet covered. If so, generate an updated 'skills/DVYUKOV.md' (or create it from scratch if it doesn't exist). Create a new branch, commit the file, and open a Pull Request using the 'github' MCP server tools.
