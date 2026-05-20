@@ -19,6 +19,7 @@ Assessing coverage is still generally very useful and allows to understand overa
 but treat it with a grain of salt.
 
 See [this](linux/coverage.md) for Linux kernel specific coverage information.
+See [End-to-End Coverage Data Lifetime](coverage_data_lifetime.md) for detailed information on how coverage data flows through the system.
 
 ## Web Interface
 

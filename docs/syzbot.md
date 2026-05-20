@@ -553,6 +553,10 @@ of a particular subsystem and/or patch.
 
 Kernel configs, sysctls and command line arguments that `syzbot` uses are available in [/dashboard/config](/dashboard/config).
 
+## Coverage Data
+
+For information on how coverage data is collected and processed in the syzkaller/syzbot ecosystem, see [End-to-End Coverage Data Lifetime](coverage_data_lifetime.md).
+
 ## Is syzbot code available?
 
 Yes, it is [here](/dashboard/app).
