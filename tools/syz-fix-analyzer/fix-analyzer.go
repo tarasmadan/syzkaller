@@ -157,14 +157,22 @@ func isFixable(bug api.BugSummary, repo vcs.Repo) (BugType, bool, error) {
 	if err != nil {
 		return "", false, err
 	}
-	diff, errs := git_diff_parser.Parse(string(com.Patch))
-	if len(errs) != 0 {
-		return "", false, fmt.Errorf("parsing patch: %v", errs)
+	var files []git_diff_parser.FileDiff
+	seenFiles := make(map[*git_diff_parser.FileDiff]bool)
+	_, _, err = git_diff_parser.SignificantChange(string(com.Patch), func(file *git_diff_parser.FileDiff, change *git_diff_parser.ContentChange) (bool, string) {
+		if !seenFiles[file] {
+			seenFiles[file] = true
+			files = append(files, *file)
+		}
+		return false, ""
+	})
+	if err != nil {
+		return "", false, fmt.Errorf("parsing patch: %v", err)
 	}
-	if len(diff.FileDiff) != 1 {
+	if len(files) != 1 {
 		return typ, false, nil
 	}
-	file := diff.FileDiff[0]
+	file := files[0]
 	if file.IsBinary || file.FromFile != file.ToFile ||
 		!strings.HasSuffix(file.FromFile, ".c") && !strings.HasSuffix(file.FromFile, ".h") {
 		return typ, false, nil
