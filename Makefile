@@ -109,7 +109,7 @@ endif
 	check_copyright check_language check_whitespace check_sql_newlines check_links check_diff check_commits check_shebang check_html \
 	presubmit presubmit_aux presubmit_build presubmit_arch_linux presubmit_arch_freebsd \
 	presubmit_arch_netbsd presubmit_arch_openbsd presubmit_arch_darwin presubmit_arch_windows \
-	presubmit_arch_executor presubmit_dashboard presubmit_race presubmit_race_dashboard presubmit_old
+	presubmit_arch_executor presubmit_dashboard presubmit_race presubmit_race_dashboard presubmit_old presubmit_unused
 
 all: host target
 host: manager repro mutate prog2c db upgrade
@@ -299,15 +299,26 @@ tidy: descriptions
 		--extra-arg=-std=c++17 \
 		executor/*.cc
 
-lint: deadcode check_whitespace check_sql_newlines check_links check_html check_shebang
+bin/golangci-lint:
 	CGO_ENABLED=1 $(HOSTGO) install github.com/golangci/golangci-lint/v2/cmd/golangci-lint
+
+bin/syz-linter.so:
 	CGO_ENABLED=1 $(HOSTGO) build -buildmode=plugin -o bin/syz-linter.so ./tools/syz-linter
+
+lint: bin/golangci-lint bin/syz-linter.so deadcode check_whitespace check_sql_newlines check_links check_html check_shebang
 	bin/golangci-lint run ./...
+
+presubmit_unused: bin/golangci-lint bin/syz-linter.so
+	@if [ "$(GITHUB_PR_BASE_SHA)" != "" ]; then \
+		bin/golangci-lint run --new-from-rev=$(GITHUB_PR_BASE_SHA) ./... ; \
+	else \
+		echo "Skipping presubmit_unused (not a PR build)" ; \
+	fi
 
 deadcode:
 	# If deadcode flags an unused function that is used externally,
 	# use runtime.KeepAlive call with a comment in an init function to suppress the warning.
-	go run $(GOHOSTFLAGS) golang.org/x/tools/cmd/deadcode -test ./... | awk '{print} /unreachable/{fail=1} END{exit fail}'
+	go run $(GOHOSTFLAGS) golang.org/x/tools/cmd/deadcode -test ./... 2>&1 | awk '{print} /unreachable/{fail=1} END{exit fail}'
 
 presubmit:
 	$(MAKE) presubmit_aux
@@ -324,7 +335,7 @@ presubmit:
 
 presubmit_aux:
 	$(MAKE) generate
-	$(MAKE) -j100 check_commits check_diff check_copyright check_language check_k8s tidy
+	$(MAKE) -j100 check_commits check_diff check_copyright check_language check_k8s tidy presubmit_unused deadcode
 	$(GO) mod tidy
 
 presubmit_build: descriptions
@@ -446,7 +457,7 @@ check_commits:
 	./tools/check-commits.sh
 
 check_links:
-	python ./tools/check_links.py $$(pwd) $$(git ls-files '*.md')
+	python3 ./tools/check_links.py $$(pwd) $$(git ls-files '*.md')
 
 check_html:
 	./tools/check-html.sh
