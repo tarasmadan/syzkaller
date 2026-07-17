@@ -308,65 +308,20 @@ type activeSessionRow struct {
 	Created time.Time
 }
 
-type orphanFinder struct {
-	// client is the Spanner client used to execute queries.
-	client *spanner.Client
-	// validSessions is the set of completed session IDs present in merge_history.
-	validSessions map[string]bool
-	// processedSessions tracks session IDs already processed to avoid duplicates and redundant lookups.
-	processedSessions map[string]bool
-	// activeSessions maps registered session IDs in the sessions table to their creation time.
-	activeSessions map[string]time.Time
-	// cutoff is the threshold time; sessions created before this time are considered expired.
-	cutoff time.Time
-	// sessionCh is the channel used to send expired session IDs to deletion workers.
-	sessionCh chan<- string
-}
-
-func (f *orphanFinder) stream(ctx context.Context, sql string) error {
-	iter := f.client.Single().Query(ctx, spanner.Statement{SQL: sql})
-	defer iter.Stop()
-	for {
-		r, err := pkgspanner.ReadRow[sessionRow](iter)
-		if err != nil {
-			return err
-		}
-		if r == nil {
-			break
-		}
-		if f.validSessions[r.Session] || f.processedSessions[r.Session] {
-			continue
-		}
-		f.processedSessions[r.Session] = true
-		created, ok := f.activeSessions[r.Session]
-		if !ok || created.Before(f.cutoff) {
-			select {
-			case f.sessionCh <- r.Session:
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-		}
-	}
-	return nil
-}
-
-// DeleteGarbage cleans up orphaned database entries that are no longer associated with active merge sessions.
+// DeleteGarbage cleans up database entries for sessions that are:
+//  1. Present in "sessions" table but created more than 1 week ago (failed/abandoned sessions).
+//  2. Not present in "merge_history" (i.e. they are not completed sessions).
 //
-// It identifies sessions in "files" and "functions" tables that are:
-//  1. Not present in "merge_history" (i.e. they are not completed sessions).
-//  2. Either missing from "sessions" table (legacy active sessions, which are deleted immediately)
-//     or present in "sessions" table but created more than 1 week ago (failed/abandoned sessions).
+// Active incomplete sessions (created within the last week) and completed sessions
+// (present in "merge_history") are preserved.
 //
-// Active incomplete sessions (present in "sessions" table and created within the last week)
-// are preserved to allow ongoing uploads to complete.
-//
-// To avoid slow anti-joins in Spanner, this function fetches all valid and active sessions first,
-// then streams distinct sessions from files and functions, performing the filtering in Go.
+// It does NOT clean up orphaned records in "files" or "functions" tables that do not
+// have a corresponding record in the "sessions" table.
 //
 // To avoid exceeding Spanner mutation limits, entries are deleted in batches of 10,000.
 //
 // Returns the number of deleted sessions and the total number of deleted rows.
-func DeleteGarbage(ctx context.Context, client *spanner.Client) (int64, int64, error) {
+func DeleteGarbage(ctx context.Context, client *spanner.Client, workers int) (int64, int64, error) {
 	if client == nil {
 		return 0, 0, fmt.Errorf("nil spannerclient")
 	}
@@ -384,8 +339,7 @@ func DeleteGarbage(ctx context.Context, client *spanner.Client) (int64, int64, e
 		validSessions[r.Session] = true
 	}
 
-	// 2. Get all active sessions from sessions
-	activeSessions := make(map[string]time.Time)
+	// 2. Get all sessions from sessions table
 	iterSessions := client.Single().Query(ctx, spanner.Statement{
 		SQL: `SELECT session, created FROM sessions`})
 	defer iterSessions.Stop()
@@ -393,17 +347,17 @@ func DeleteGarbage(ctx context.Context, client *spanner.Client) (int64, int64, e
 	if err != nil {
 		return 0, 0, err
 	}
-	for _, r := range sessionRows {
-		activeSessions[r.Session] = r.Created
-	}
 
-	// 3. Stream distinct sessions from files and functions and feed to workers.
+	// 3. Process expired sessions.
 	var deletedRows atomic.Int64
 	var deletedSessions atomic.Int64
 	eg, gCtx := errgroup.WithContext(ctx)
 
 	sessionCh := make(chan string)
-	const numWorkers = 10
+	numWorkers := workers
+	if numWorkers <= 0 {
+		numWorkers = 10
+	}
 
 	// Spawn workers to process garbage sessions.
 	for range numWorkers {
@@ -418,24 +372,21 @@ func DeleteGarbage(ctx context.Context, client *spanner.Client) (int64, int64, e
 		})
 	}
 
-	finder := &orphanFinder{
-		client:            client,
-		validSessions:     validSessions,
-		processedSessions: make(map[string]bool),
-		activeSessions:    activeSessions,
-		cutoff:            time.Now().Add(-oneWeekAgo),
-		sessionCh:         sessionCh,
-	}
+	cutoff := time.Now().Add(-oneWeekAgo)
 
 	eg.Go(func() error {
 		defer close(sessionCh)
-
-		if err := finder.stream(gCtx, `SELECT DISTINCT session FROM files`); err != nil {
-			return err
-		}
-
-		if err := finder.stream(gCtx, `SELECT DISTINCT session FROM functions`); err != nil {
-			return err
+		for _, r := range sessionRows {
+			if validSessions[r.Session] {
+				continue
+			}
+			if r.Created.Before(cutoff) {
+				select {
+				case sessionCh <- r.Session:
+				case <-gCtx.Done():
+					return gCtx.Err()
+				}
+			}
 		}
 		return nil
 	})
