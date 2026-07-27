@@ -7,31 +7,32 @@ Assuming you have the coverage `*.jsonl` files in some bucket:
 Coverage merger job is consuming data from BQ table and store aggregations
 in the Spanner DB.
 
-The dots in BQ table name are not supported, thus:
-1. For the namespace "upstream" the expected BQ table name is "upstream".
-2. For the namespace "android-6.12" the expected BQ table name is "android-6-12".
+### Create unified BigQuery table
 
-
-### Create new BigQuery table for coverage data
 ```bash
 bq mk \
   --table \
-  --description "android 6.12" \
+  --description "merged coverage" \
   --time_partitioning_field timestamp \
   --time_partitioning_type DAY \
   --require_partition_filter=true \
-  --clustering_fields file_path,kernel_commit,hit_count \
-  syzkaller:syzbot_coverage.android-6-12 \
+  --clustering_fields namespace,file_path,kernel_commit \
+  syzkaller:syzbot_coverage.coverage \
   ./pkg/coveragedb/bq-schema.json
 ```
 
 ### Add new data transfer
+
+For each manager/namespace, we set up a Data Transfer to load data from GCS to the unified table.
+The `destination_table_name_template` must point to `coverage`.
+
+Example for public manager `upstream`:
 ```bash
 bq mk \
   --transfer_config \
-  --display_name=ci-android-6-12-bucket-to-syzbot_coverage \
-  --params='{"destination_table_name_template":"android-6-12",
-  "data_path_template": "gs://$COVERAGE_STREAM_BUCKET/ci-android-6.12/*.jsonl",
+  --display_name=ci-upstream-bucket-to-syzbot_coverage \
+  --params='{"destination_table_name_template":"coverage",
+  "data_path_template": "gs://$COVERAGE_STREAM_BUCKET/ci-upstream/*.jsonl",
   "allow_jagged_rows": false,
   "allow_quoted_newlines": false,
   "delete_source_files": true,

@@ -14,8 +14,8 @@
   {
     "name": "namespace",
     "type": "STRING",
-    "mode": "NULLABLE",
-    "description": "transient state: optional during rollout, will be required later"
+    "mode": "REQUIRED",
+    "description": "Dashboard namespace for coverage reporting"
   },
   {
     "name": "fuzzing_minutes",
